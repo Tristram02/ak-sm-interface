@@ -62,52 +62,65 @@ export function formatXml(xml: string): string {
   return formatted.substring(1, formatted.length - 2);
 }
 
+// Recursive type for fully-parsed XML nodes
+export interface XmlNode {
+  _tag: string;
+  _attrs: Record<string, string>;
+  _text?: string;
+  _children: XmlNode[];
+}
+
 /**
- * Parse XML response string to extract data
+ * Recursively parse a DOM Element into an XmlNode, capturing
+ * every attribute and every child element — nothing is dropped.
+ */
+function parseElement(el: Element): XmlNode {
+  const attrs: Record<string, string> = {};
+  Array.from(el.attributes).forEach(a => {
+    attrs[a.name] = a.value;
+  });
+
+  const children: XmlNode[] = [];
+  Array.from(el.children).forEach(child => {
+    children.push(parseElement(child));
+  });
+
+  // Direct text content (ignoring whitespace-only and child element text)
+  const directText = Array.from(el.childNodes)
+    .filter(n => n.nodeType === Node.TEXT_NODE)
+    .map(n => n.textContent?.trim() ?? '')
+    .join('')
+    .trim();
+
+  const node: XmlNode = { _tag: el.tagName, _attrs: attrs, _children: children };
+  if (directText) node._text = directText;
+  return node;
+}
+
+/**
+ * Parse XML response string to extract ALL data from the entire XML tree.
+ * Returns the root XmlNode (the <resp> element) plus top-level action/error
+ * for backward compatibility with XmlResponse.
  */
 export function parseXmlResponse(xmlString: string): Record<string, unknown> {
   const parser = new DOMParser();
   const xmlDoc = parser.parseFromString(xmlString, 'text/xml');
-  
+
   const parseError = xmlDoc.querySelector('parsererror');
   if (parseError) {
     throw new Error('Invalid XML response');
   }
-  
-  const resp = xmlDoc.querySelector('resp');
+
+  const resp = xmlDoc.documentElement;
   if (!resp) {
-    throw new Error('No response element found');
+    throw new Error('No root element found');
   }
-  
-  const result: Record<string, unknown> = {
-    action: resp.getAttribute('action') || '',
-    error: parseInt(resp.getAttribute('error') || '0', 10),
+
+  const tree = parseElement(resp);
+
+  return {
+    action: resp.getAttribute('action') ?? '',
+    error: parseInt(resp.getAttribute('error') ?? '0', 10),
+    tree,
   };
-  
-  // Parse val elements
-  const valElements = resp.querySelectorAll('val');
-  if (valElements.length > 0) {
-    result.values = Array.from(valElements).map(val => {
-      const valData: Record<string, unknown> = {};
-      
-      Array.from(val.attributes).forEach(attr => {
-        valData[attr.name] = attr.value;
-      });
-      
-      if (val.textContent?.trim()) {
-        valData.value = val.textContent.trim();
-      }
-      
-      ['value', 'min', 'max', 'def'].forEach(tag => {
-        const elem = val.querySelector(tag);
-        if (elem?.textContent) {
-          valData[tag] = elem.textContent.trim();
-        }
-      });
-      
-      return valData;
-    });
-  }
-  
-  return result;
 }

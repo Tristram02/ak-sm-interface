@@ -12,6 +12,8 @@ export const Main: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [ipAddress, setIpAddress] = useState<string>('95.171.115.243');
   const [port, setPort] = useState<number>(6080);
+  const [username, setUsername] = useState<string>('');
+  const [password, setPassword] = useState<string>('');
   const [showSettings, setShowSettings] = useState<boolean>(false);
 
   useEffect(() => {
@@ -45,6 +47,7 @@ export const Main: React.FC = () => {
 
   const handleUpdateEndpoint = () => {
     ApiService.setEndpoint(ipAddress, port);
+    ApiService.setCredentials(username, password);
     setError(null);
     alert(`Endpoint updated to: ${ApiService.getEndpoint()}`);
   };
@@ -86,11 +89,33 @@ export const Main: React.FC = () => {
                 placeholder="6080"
               />
             </div>
+            <div className="form-group">
+              <label htmlFor="username">Username</label>
+              <input
+                id="username"
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="admin"
+                autoComplete="username"
+              />
+            </div>
+            <div className="form-group">
+              <label htmlFor="password">Password</label>
+              <input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                autoComplete="current-password"
+              />
+            </div>
           </div>
           <button className="update-endpoint-btn" onClick={handleUpdateEndpoint}>
             Update Endpoint
           </button>
-          <p className="current-endpoint">Current: {ApiService.getEndpoint()}</p>
+          <p className="current-endpoint">Current: {ApiService.getEndpoint()}{username ? ` · User: ${username}` : ''}</p>
         </section>
       )}
 
