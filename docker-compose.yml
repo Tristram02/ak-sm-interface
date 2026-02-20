@@ -1,0 +1,61 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: aksm
+      POSTGRES_USER: aksm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aksm_secret}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aksm"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  auth-service:
+    build: ./auth-service
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://aksm:${POSTGRES_PASSWORD:-aksm_secret}@postgres:5432/aksm
+      JWT_SECRET: ${JWT_SECRET:-change_me_in_production}
+      PORT: 3001
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+
+  api-service:
+    build: ./api-service
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://aksm:${POSTGRES_PASSWORD:-aksm_secret}@postgres:5432/aksm
+      JWT_SECRET: ${JWT_SECRET:-change_me_in_production}
+      PORT: 3002
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+
+  frontend:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - auth-service
+      - api-service
+    networks:
+      - internal
+
+volumes:
+  pgdata:
+
+networks:
+  internal:
