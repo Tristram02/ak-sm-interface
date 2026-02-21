@@ -3,11 +3,13 @@ import { useAuth } from '../contexts/AuthContext';
 import type { Building } from './BuildingsPage';
 import type { Room } from '../types/scheme.types';
 
-interface DashboardProps { building: Building; }
+import { parseDevices, parseVals, getError } from '../utils/dashboardParsers';
+import { emptyPanel, PanelTimestamp, PanelContent } from '../components/dashboard/PanelContent';
+import type { PanelState } from '../components/dashboard/PanelContent';
+import { ChillingToggle } from '../components/dashboard/ChillingToggle';
+import { RefreshCountdown } from '../components/dashboard/RefreshCountdown';
 
-// ── Device-specific parser (Chłodnictwo panel) ──────────────────────────────
-
-interface DeviceItem {
+export interface DeviceItem {
   name: string;
   value: string;
   status: string;
@@ -22,214 +24,12 @@ interface DeviceItem {
   isGroup: boolean;
 }
 
-function parseDevices(xml: string): DeviceItem[] {
-  try {
-    const doc = new DOMParser().parseFromString(xml, 'application/xml');
-    return Array.from(doc.querySelectorAll('device')).map(el => {
-      const childTxt = (tag: string) => el.querySelector(tag)?.textContent?.trim() ?? '';
-      const attr     = (a: string)   => el.getAttribute(a) ?? '';
-      return {
-        name:      childTxt('name') || attr('name'),
-        value:     attr('value'),
-        status:    attr('status'),
-        type:      childTxt('type'),
-        ctrlVal:   attr('ctrl_val'),
-        alarm:     attr('alarm'),
-        online:    attr('online'),
-        defrost:   attr('defrost'),
-        modelname: attr('modelname'),
-        nodetype:  attr('nodetype'),
-        indent:    attr('indent'),
-        isGroup:   attr('nodetype') === '255',
-      };
-    });
-  } catch { return []; }
+interface DashboardProps {
+  building: Building;
+  onDeviceItemsChange?: (items: DeviceItem[]) => void;
 }
 
-const STATUS_BG: Record<string, string> = {
-  'Normal':            'rgba(16,185,129,0.12)',
-  'Normal ctrl.':      'rgba(16,185,129,0.12)',
-  'Adaptive SH ctrl':  'rgba(6,182,212,0.12)',
-  'Modulating temp.':  'rgba(6,182,212,0.12)',
-  'Standby':           'rgba(148,163,184,0.08)',
-  'Defrost':           'rgba(59,130,246,0.12)',
-  'Heat reclaim':      'rgba(245,158,11,0.12)',
-  'Ther. cutout':      'rgba(245,158,11,0.12)',
-  'AlmOff':            'rgba(148,163,184,0.08)',
-  'err':               'rgba(239,68,68,0.12)',
-};
-const STATUS_COL: Record<string, string> = {
-  'Normal':            '#10b981',
-  'Normal ctrl.':      '#10b981',
-  'Adaptive SH ctrl':  '#06b6d4',
-  'Modulating temp.':  '#06b6d4',
-  'Standby':           '#94a3b8',
-  'Defrost':           '#3b82f6',
-  'Heat reclaim':      '#f59e0b',
-  'Ther. cutout':      '#f59e0b',
-  'AlmOff':            '#94a3b8',
-  'err':               '#ef4444',
-};
-
-const DeviceTable: React.FC<{ items: DeviceItem[]; emptyMsg: string }> = ({ items, emptyMsg }) => {
-  if (items.length === 0) return <p className="dash-empty">{emptyMsg}</p>;
-  return (
-    <div className="dp-table-wrap">
-      <table className="dp-table">
-        <thead>
-          <tr><th>Nazwa</th><th>Typ</th><th>Wartość</th><th>Setpoint</th><th>Status</th><th>⚠</th></tr>
-        </thead>
-        <tbody>
-          {items.map((d, i) => {
-            if (d.isGroup) {
-              return (
-                <tr key={i} className="dp-row-group">
-                  <td colSpan={6} className="dp-cell-group">🏭 {d.name}</td>
-                </tr>
-              );
-            }
-            const hasAlarm = d.alarm === '1';
-            const bg  = hasAlarm ? 'rgba(239,68,68,0.12)' : (STATUS_BG[d.status]  ?? '');
-            const col = hasAlarm ? '#ef4444'              : (STATUS_COL[d.status] ?? 'var(--text-muted)');
-            const indentPx = 0.6 + Number(d.indent || 0) * 0.8;
-            return (
-              <tr key={i} style={{ background: bg }}>
-                <td className="dp-cell-descr" style={{ paddingLeft: `${indentPx}rem` }}>
-                  {d.name || '—'}
-                </td>
-                <td className="dp-cell-tag">{d.type || '—'}</td>
-                <td className="dp-cell-val">{d.value || '—'}</td>
-                <td className="dp-cell-extra">{d.ctrlVal || '—'}</td>
-                <td>
-                  <span className="dp-status-badge" style={{ color: col, borderColor: col }}>
-                    {d.defrost === '1' ? '🧊 ' : ''}{d.status || '—'}
-                  </span>
-                </td>
-                <td className="dp-cell-alarm">{hasAlarm ? '🚨' : ''}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-};
-
-// ── Generic parser (Alarmy / Wejścia panels) ─────────────────────────────────
-
-interface ValItem {
-  n: string; descr: string; val: string; unit: string; state: string;
-  tag: string; allAttrs: Record<string, string>;
-}
-
-function parseVals(xml: string): ValItem[] {
-  try {
-    const doc = new DOMParser().parseFromString(xml, 'application/xml');
-    const root = doc.documentElement;
-    if (!root) return [];
-    let elements: Element[] = Array.from(root.querySelectorAll('val'));
-    if (elements.length === 0) elements = Array.from(root.children);
-    if (elements.length === 0) return [];
-    return elements.map((el, i) => {
-      const attrs: Record<string, string> = {};
-      for (const a of Array.from(el.attributes)) attrs[a.name] = a.value;
-      return {
-        tag:   el.tagName,
-        n:     attrs['n']     ?? attrs['id']    ?? String(i),
-        descr: attrs['descr'] ?? attrs['name']  ?? attrs['type'] ?? el.tagName,
-        val:   attrs['val']   ?? attrs['value'] ?? attrs['v']    ?? el.textContent?.trim() ?? '',
-        unit:  attrs['unit']  ?? attrs['u']     ?? '',
-        state: attrs['state'] ?? attrs['s']     ?? attrs['status'] ?? '',
-        allAttrs: attrs,
-      };
-    });
-  } catch { return []; }
-}
-
-function getError(xml: string): string | null {
-  try {
-    const doc = new DOMParser().parseFromString(xml, 'application/xml');
-    const err = doc.documentElement?.getAttribute('error');
-    if (err && err !== '0') return `Błąd urządzenia: ${err}`;
-    return null;
-  } catch { return null; }
-}
-
-const ValTable: React.FC<{ items: ValItem[] }> = ({ items }) => {
-  const extraKeys = Array.from(
-    new Set(items.flatMap(it => Object.keys(it.allAttrs)))
-  ).filter(k => !['n','descr','val','unit','state'].includes(k));
-  return (
-    <div className="dp-table-wrap">
-      <table className="dp-table">
-        <thead>
-          <tr>
-            <th>#</th><th>Tag</th><th>Opis</th><th>Wartość</th><th>J.</th><th>Stan</th>
-            {extraKeys.map(k => <th key={k}>{k}</th>)}
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((item, i) => (
-            <tr key={i} className={item.state === '1' ? 'dp-row-active' : ''}>
-              <td className="dp-cell-n">{item.n}</td>
-              <td className="dp-cell-tag">{item.tag}</td>
-              <td className="dp-cell-descr">{item.descr || '—'}</td>
-              <td className="dp-cell-val">{item.val !== '' ? item.val : '—'}</td>
-              <td className="dp-cell-unit">{item.unit || '—'}</td>
-              <td className="dp-cell-state">{item.state || '—'}</td>
-              {extraKeys.map(k => (
-                <td key={k} className="dp-cell-extra">{item.allAttrs[k] ?? '—'}</td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-};
-
-// ── Panel sub-components ─────────────────────────────────────────────────────
-
-interface PanelState {
-  data: ValItem[];
-  raw: string;
-  loading: boolean;
-  error: string | null;
-  lastUpdate: Date | null;
-}
-const emptyPanel = (): PanelState => ({ data: [], raw: '', loading: false, error: null, lastUpdate: null });
-
-const PanelTimestamp: React.FC<{ state: PanelState }> = ({ state }) => (
-  <div className="dp-meta">
-    {state.loading && <span className="dpm-loading">⟳ Ładowanie…</span>}
-    {state.error   && <span className="dpm-error" title={state.error}>⚠ Błąd</span>}
-    {state.lastUpdate && !state.error && (
-      <span className="dpm-ok">✓ {state.lastUpdate.toLocaleTimeString('pl-PL')}</span>
-    )}
-  </div>
-);
-
-const PanelContent: React.FC<{ state: PanelState; emptyMsg: string }> = ({ state, emptyMsg }) => {
-  const [showRaw, setShowRaw] = React.useState(false);
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div className="dp-view-toggle">
-        <button className={`dp-vtbtn ${!showRaw ? 'active' : ''}`} onClick={() => setShowRaw(false)}>Tabela</button>
-        <button className={`dp-vtbtn ${showRaw  ? 'active' : ''}`} onClick={() => setShowRaw(true)}>Raw XML</button>
-      </div>
-      {showRaw
-        ? <pre className="dp-raw">{state.raw || '(brak danych)'}</pre>
-        : state.data.length > 0
-          ? <ValTable items={state.data} />
-          : <p className="dash-empty">{emptyMsg}</p>
-      }
-    </div>
-  );
-};
-
-// ── Main component ───────────────────────────────────────────────────────────
-
-export const DashboardPage: React.FC<DashboardProps> = ({ building }) => {
+export const DashboardPage: React.FC<DashboardProps> = ({ building, onDeviceItemsChange }) => {
   const { token } = useAuth();
   const authHeader = { Authorization: `Bearer ${token}` };
 
@@ -239,7 +39,7 @@ export const DashboardPage: React.FC<DashboardProps> = ({ building }) => {
   const [inputs,        setInputs]        = useState<PanelState>(emptyPanel());
   const [schemes, setSchemes] = useState<{ id: number; name: string; rooms: Room[] }[]>([]);
 
-  // ── Devices sender (updates both deviceItems and chillingState) ──
+  // ── Devices poll ────────────────────────────────────────────────────────────
   const sendCmdDevices = useCallback(async () => {
     const xml = '<cmd action="read_devices" nodetype="16" node="12" mod="0" point="0" />';
     setChillingState(prev => ({ ...prev, loading: true, error: null }));
@@ -251,14 +51,16 @@ export const DashboardPage: React.FC<DashboardProps> = ({ building }) => {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = await res.text();
-      setDeviceItems(parseDevices(text));
+      const items = parseDevices(text);
+      setDeviceItems(items);
+      onDeviceItemsChange?.(items);
       setChillingState({ data: [], raw: text, loading: false, error: getError(text), lastUpdate: new Date() });
     } catch (e) {
       setChillingState(prev => ({ ...prev, loading: false, error: e instanceof Error ? e.message : 'Błąd', lastUpdate: new Date() }));
     }
-  }, [building.id, token]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [building.id, token, onDeviceItemsChange]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Generic sender ──
+  // ── Generic command ─────────────────────────────────────────────────────────
   const sendCmd = useCallback(async (cmdXml: string, setter: React.Dispatch<React.SetStateAction<PanelState>>) => {
     setter(prev => ({ ...prev, loading: true, error: null }));
     try {
@@ -275,7 +77,7 @@ export const DashboardPage: React.FC<DashboardProps> = ({ building }) => {
     }
   }, [building.id, token]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Staggered poll: t=0s, t+1s, t+2s; repeat every 60s ──
+  // ── Staggered poll ──────────────────────────────────────────────────────────
   useEffect(() => {
     const CMD_ALARMS = '<cmd action="read_device_alarms" nodetype="16" node="12" mod="0" point="0" />';
     const CMD_INPUTS = '<cmd action="read_inputs"        nodetype="16" node="12" mod="0" point="0" />';
@@ -291,7 +93,7 @@ export const DashboardPage: React.FC<DashboardProps> = ({ building }) => {
     return () => { clearInterval(interval); clearTimeout(t1); clearTimeout(t2); };
   }, [sendCmd, sendCmdDevices]);
 
-  // ── Scheme list (Konfiguracja panel) ──
+  // ── Scheme list ─────────────────────────────────────────────────────────────
   useEffect(() => {
     fetch(`/api/buildings/${building.id}/schemes`, { headers: authHeader })
       .then(r => r.json())
@@ -392,39 +194,6 @@ export const DashboardPage: React.FC<DashboardProps> = ({ building }) => {
         </div>
 
       </div>
-    </div>
-  );
-};
-
-// ── Chłodnictwo toggle (Tabela / Raw XML) ────────────────────────────────────
-const ChillingToggle: React.FC<{ deviceItems: DeviceItem[]; raw: string }> = ({ deviceItems, raw }) => {
-  const [showRaw, setShowRaw] = React.useState(false);
-  return (
-    <>
-      <div className="dp-view-toggle">
-        <button className={`dp-vtbtn ${!showRaw ? 'active' : ''}`} onClick={() => setShowRaw(false)}>Tabela</button>
-        <button className={`dp-vtbtn ${showRaw  ? 'active' : ''}`} onClick={() => setShowRaw(true)}>Raw XML</button>
-      </div>
-      {showRaw
-        ? <pre className="dp-raw">{raw || '(brak danych)'}</pre>
-        : <DeviceTable items={deviceItems} emptyMsg="Oczekiwanie na odpowiedź urządzenia…" />
-      }
-    </>
-  );
-};
-
-// ── Countdown timer ───────────────────────────────────────────────────────────
-const RefreshCountdown: React.FC<{ interval: number }> = ({ interval }) => {
-  const [seconds, setSeconds] = useState(interval);
-  useEffect(() => {
-    setSeconds(interval);
-    const tick = setInterval(() => setSeconds(s => s <= 1 ? interval : s - 1), 1000);
-    return () => clearInterval(tick);
-  }, [interval]);
-  return (
-    <div className="refresh-countdown">
-      <div className="rc-label">Następne odświeżenie za <strong>{seconds}s</strong></div>
-      <div className="rc-bar"><div className="rc-fill" style={{ width: `${((interval - seconds) / interval) * 100}%` }} /></div>
     </div>
   );
 };

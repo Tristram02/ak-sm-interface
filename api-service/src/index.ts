@@ -7,7 +7,7 @@ import { router as commandRouter } from './routes/command';
 const app = express();
 
 app.use(cors({ origin: '*' }));
-app.use(express.json());
+app.use(express.json({ limit: '30mb' }));
 // Also parse raw text for XML command bodies
 app.use('/buildings/:buildingId/command', express.text({ type: 'application/xml' }));
 

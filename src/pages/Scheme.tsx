@@ -1,441 +1,328 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import type { Room, RoomType, SelectionRect, RoomAnimState } from '../types/scheme.types';
-import { ROOM_TYPE_META } from '../types/scheme.types';
-import { getRoomIcon } from '../components/RoomIcons';
+import type {
+  SchemeObject, SchemeRecord, SchemeSummary, DeviceIconType, SelectionRect,
+} from '../types/scheme.types';
 import { useAuth } from '../contexts/AuthContext';
+import type { DeviceItem } from './DashboardPage';
 
-// ── Types ────────────────────────────────────────────────────────────────────
+import { uid } from '../utils/schemeHelpers';
+import type { ToolMode } from '../utils/schemeHelpers';
 
-interface SchemeRecord {
-  id: number;
-  name: string;
-  rows: number;
-  cols: number;
-  rooms: Room[];
-  updated_at: string;
+import { SchemeSidebar } from '../components/scheme/SchemeSidebar';
+import { SchemeToolbar } from '../components/scheme/SchemeToolbar';
+import { SchemeCanvas } from '../components/scheme/SchemeCanvas';
+import { DetailPanel } from '../components/scheme/DetailPanel';
+import { DetailModal } from '../components/scheme/DetailModal';
+import { DevicePickerDialog } from '../components/scheme/DevicePickerDialog';
+import { RoomDialog } from '../components/scheme/RoomDialog';
+
+export interface SchemeProps {
+  buildingId: number;
+  deviceItems: DeviceItem[];
 }
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-
-let nextLocalId = 1;
-const uid = () => `room-${nextLocalId++}`;
-
-const normalize = (sel: SelectionRect): SelectionRect => ({
-  rowStart: Math.min(sel.rowStart, sel.rowEnd),
-  rowEnd:   Math.max(sel.rowStart, sel.rowEnd),
-  colStart: Math.min(sel.colStart, sel.colEnd),
-  colEnd:   Math.max(sel.colStart, sel.colEnd),
-});
-
-const overlaps = (a: SelectionRect, b: Room): boolean =>
-  a.rowStart <= b.rowEnd && a.rowEnd >= b.rowStart &&
-  a.colStart <= b.colEnd && a.colEnd >= b.colStart;
-
-const inSel = (row: number, col: number, sel: SelectionRect | null): boolean => {
-  if (!sel) return false;
-  const n = normalize(sel);
-  return row >= n.rowStart && row <= n.rowEnd && col >= n.colStart && col <= n.colEnd;
-};
-
-// ── Create-room panel ────────────────────────────────────────────────────────
-
-const CreatePanel: React.FC<{
-  selection: SelectionRect;
-  onConfirm: (name: string, type: RoomType) => void;
-  onCancel: () => void;
-}> = ({ selection, onConfirm, onCancel }) => {
-  const [name, setName] = useState('');
-  const [type, setType] = useState<RoomType>('mroznia');
-  const n = normalize(selection);
-  const rows = n.rowEnd - n.rowStart + 1;
-  const cols = n.colEnd - n.colStart + 1;
-
-  return (
-    <div className="create-panel">
-      <h3 className="create-panel-title">Nowe pomieszczenie</h3>
-      <p className="create-panel-info">Obszar: {rows} × {cols} ({rows * cols} komórek)</p>
-      <div className="create-panel-field">
-        <label htmlFor="room-name">Nazwa</label>
-        <input id="room-name" type="text" value={name} onChange={e => setName(e.target.value)}
-          placeholder="np. Mroźnia 1" autoFocus />
-      </div>
-      <div className="create-panel-field">
-        <label>Typ</label>
-        <div className="room-type-picker">
-          {(Object.keys(ROOM_TYPE_META) as RoomType[]).map(t => (
-            <button key={t}
-              className={`room-type-option ${type === t ? 'selected' : ''}`}
-              onClick={() => setType(t)}
-              style={{ borderColor: type === t ? ROOM_TYPE_META[t].borderColor : undefined,
-                       background:  type === t ? ROOM_TYPE_META[t].color : undefined }}
-            >
-              <span className="rto-icon">{getRoomIcon(t, 'active', 28)}</span>
-              <span className="rto-label">{ROOM_TYPE_META[t].label}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="create-panel-actions">
-        <button className="create-confirm-btn"
-          onClick={() => onConfirm(name.trim() || ROOM_TYPE_META[type].label, type)}>
-          Utwórz
-        </button>
-        <button className="create-cancel-btn" onClick={onCancel}>Anuluj</button>
-      </div>
-    </div>
-  );
-};
-
-// ── Room cell ────────────────────────────────────────────────────────────────
-
-const RoomCell: React.FC<{ room: Room; selected: boolean; onClick: () => void }> = ({ room, selected, onClick }) => {
-  const meta = ROOM_TYPE_META[room.type];
-  return (
-    <div
-      className={`scheme-room ${selected ? 'scheme-room-selected' : ''} anim-${room.animState}`}
-      style={{ gridRow: `${room.rowStart + 1} / ${room.rowEnd + 2}`,
-               gridColumn: `${room.colStart + 1} / ${room.colEnd + 2}`,
-               background: meta.color, borderColor: selected ? '#f1f5f9' : meta.borderColor }}
-      onClick={e => { e.stopPropagation(); onClick(); }}
-    >
-      <div className="scheme-room-icon">{getRoomIcon(room.type, room.animState, 44)}</div>
-      <span className="scheme-room-name">{room.name}</span>
-    </div>
-  );
-};
-
-// ── Scheme library sidebar ───────────────────────────────────────────────────
-
-const SchemeSidebar: React.FC<{
-  schemes: SchemeRecord[];
-  activeId: number | null;
-  creating: boolean;
-  onSelect: (id: number) => void;
-  onCreate: () => void;
-  onDelete: (id: number) => void;
-  onRename: (id: number, name: string) => void;
-}> = ({ schemes, activeId, creating, onSelect, onCreate, onDelete, onRename }) => {
-  const [editingId, setEditingId] = useState<number | null>(null);
-  const [editName, setEditName] = useState('');
-
-  return (
-    <div className="scheme-sidebar">
-      <div className="scheme-sidebar-header">
-        <span>Schematy</span>
-        <button className="sidebar-new-btn" onClick={onCreate} disabled={creating}>+</button>
-      </div>
-      {schemes.length === 0
-        ? <p className="sidebar-empty">Brak schematów. Kliknij + aby utworzyć.</p>
-        : schemes.map(s => (
-          <div key={s.id}
-            className={`sidebar-item ${s.id === activeId ? 'sidebar-item-active' : ''}`}
-            onClick={() => onSelect(s.id)}
-          >
-            {editingId === s.id ? (
-              <input className="sidebar-rename-input" value={editName}
-                autoFocus
-                onChange={e => setEditName(e.target.value)}
-                onBlur={() => { onRename(editingId, editName); setEditingId(null); }}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') { onRename(editingId, editName); setEditingId(null); }
-                  if (e.key === 'Escape') setEditingId(null);
-                }}
-                onClick={e => e.stopPropagation()}
-              />
-            ) : (
-              <span className="sidebar-item-name">{s.name}</span>
-            )}
-            <div className="sidebar-item-actions" onClick={e => e.stopPropagation()}>
-              <button title="Zmień nazwę" onClick={() => { setEditingId(s.id); setEditName(s.name); }}>✏️</button>
-              <button title="Usuń" onClick={() => onDelete(s.id)}>🗑️</button>
-            </div>
-          </div>
-        ))
-      }
-    </div>
-  );
-};
-
-// ── Main Scheme page ─────────────────────────────────────────────────────────
-
-interface SchemeProps { buildingId: number; }
-
-export const Scheme: React.FC<SchemeProps> = ({ buildingId }) => {
+export const Scheme: React.FC<SchemeProps> = ({ buildingId, deviceItems }) => {
   const { token } = useAuth();
   const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 
-  // ── Scheme library state ──
-  const [schemes, setSchemes] = useState<SchemeRecord[]>([]);
-  const [activeSchemeId, setActiveSchemeId] = useState<number | null>(null);
-  // Ref mirrors state so debounced callbacks always see the latest value
-  const activeSchemeIdRef = useRef<number | null>(null);
-  const [libLoading, setLibLoading] = useState(true);
+  // ── Scheme list state ──────────────────────────────────────────────────────
+  const [schemes, setSchemes] = useState<SchemeSummary[]>([]);
+  const [activeScheme, setActiveScheme] = useState<SchemeRecord | null>(null);
   const [creating, setCreating] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'unsaved'>('saved');
-
-  // ── Grid / room state ──
-  const [rows, setRows] = useState(8);
-  const [cols, setCols] = useState(12);
-  const [rooms, setRooms] = useState<Room[]>([]);
-  const [schemeName, setSchemeName] = useState('Schemat');
-
-  // ── Interaction state ──
-  const [selection, setSelection] = useState<SelectionRect | null>(null);
-  const [isSelecting, setIsSelecting] = useState(false);
-  const [showCreate, setShowCreate] = useState(false);
-  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
-  const dragStart = useRef<{ row: number; col: number } | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const loadScheme = (s: SchemeRecord) => {
-    activeSchemeIdRef.current = s.id;
-    setActiveSchemeId(s.id);
-    setSchemeName(s.name);
-    setRows(s.rows);
-    setCols(s.cols);
-    setRooms(s.rooms ?? []);
-    setSelectedRoomId(null);
-    setSelection(null);
-    setShowCreate(false);
-    setSaveStatus('saved');
-  };
+  // ── Canvas state ───────────────────────────────────────────────────────────
+  const [tool, setTool] = useState<ToolMode>('select');
+  const [pdfOpacity, setPdfOpacity] = useState(0.5);
+  const [canvasZoom, setCanvasZoom] = useState(1.0);
 
-  // ── Load scheme list on mount ──
-  useEffect(() => {
-    fetch(`/api/buildings/${buildingId}/schemes`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.json())
-      .then((data: SchemeRecord[]) => {
-        setSchemes(data);
-        if (data.length > 0) loadScheme(data[0]);
-      })
-      .catch(console.error)
-      .finally(() => setLibLoading(false));
-  }, [buildingId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // PDF dimensions stored in scheme.cols (width) / scheme.rows (height)
+  const pdfW = activeScheme?.cols && activeScheme.cols > 0 ? activeScheme.cols : 1200;
+  const pdfH = activeScheme?.rows && activeScheme.rows > 0 ? activeScheme.rows : 800;
 
-  // ── Auto-save (debounce 800ms) — uses ref so setTimeout captures current ID ──
-  const triggerSave = (updatedRooms: Room[], updatedRows: number, updatedCols: number) => {
-    const schemeId = activeSchemeIdRef.current;
-    if (!schemeId) return;
+  // ── Interaction state ──────────────────────────────────────────────────────
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [showDetailModal, setShowDetailModal] = useState(false);
+  const [showDeviceDialog, setShowDeviceDialog] = useState(false);
+  const [pendingCell, setPendingCell] = useState<SelectionRect | null>(null);
+  const [pendingRoom, setPendingRoom] = useState<SelectionRect | null>(null);
+
+  const selectedObj = activeScheme?.objects?.find(o => o.id === selectedId) ?? null;
+
+  // ── API helpers ────────────────────────────────────────────────────────────
+
+  const triggerSave = useCallback((patch: Partial<SchemeRecord & { rows?: number; cols?: number }>) => {
+    if (!activeScheme) return;
     setSaveStatus('unsaved');
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       setSaveStatus('saving');
-      fetch(`/api/buildings/${buildingId}/schemes/${schemeId}`, {
-        method: 'PUT',
-        headers,
-        body: JSON.stringify({ rows: updatedRows, cols: updatedCols, rooms: updatedRooms }),
+      fetch(`/api/buildings/${buildingId}/schemes/${activeScheme.id}`, {
+        method: 'PUT', headers,
+        body: JSON.stringify(patch),
       })
         .then(() => setSaveStatus('saved'))
         .catch(() => setSaveStatus('unsaved'));
     }, 800);
+  }, [activeScheme?.id, buildingId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const updateObjects = (updater: (prev: SchemeObject[]) => SchemeObject[]) => {
+    if (!activeScheme) return;
+    const next = updater(activeScheme.objects ?? []);
+    const updated = { ...activeScheme, objects: next };
+    setActiveScheme(updated);
+    triggerSave({ objects: next });
   };
 
-  const setRoomsAndSave = (updater: (prev: Room[]) => Room[]) => {
-    setRooms(prev => {
-      const next = updater(prev);
-      triggerSave(next, rows, cols);
-      return next;
-    });
+  // ── Load scheme list ───────────────────────────────────────────────────────
+
+  const loadScheme = (id: number) => {
+    fetch(`/api/buildings/${buildingId}/schemes/${id}`, { headers })
+      .then(r => r.json())
+      .then((data: SchemeRecord) => {
+        setActiveScheme({ ...data, objects: data.objects ?? [] });
+        setPdfOpacity(data.grid_opacity ?? 0.5);
+        setSelectedId(null);
+      })
+      .catch(console.error);
   };
 
-  // ── Scheme library actions ──
+  useEffect(() => {
+    if (!buildingId) return;
+    fetch(`/api/buildings/${buildingId}/schemes`, { headers })
+      .then(r => r.json())
+      .then((data: SchemeSummary[]) => {
+        setSchemes(data);
+        if (data.length > 0 && !activeScheme) loadScheme(data[0].id);
+      })
+      .catch(console.error);
+  }, [buildingId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── CRUD ───────────────────────────────────────────────────────────────────
+
   const handleCreate = async () => {
     setCreating(true);
-    const res = await fetch(`/api/buildings/${buildingId}/schemes`, {
-      method: 'POST', headers,
-      body: JSON.stringify({ name: 'Nowy schemat', rows: 8, cols: 12, rooms: [] }),
-    });
-    const s = await res.json() as SchemeRecord;
-    setSchemes(prev => [...prev, s]);
-    loadScheme(s);
-    setCreating(false);
-  };
-
-  const handleDeleteScheme = async (id: number) => {
-    if (!confirm('Usunąć ten schemat?')) return;
-    await fetch(`/api/buildings/${buildingId}/schemes/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
-    const remaining = schemes.filter(s => s.id !== id);
-    setSchemes(remaining);
-    if (activeSchemeId === id) {
-      if (remaining.length > 0) loadScheme(remaining[0]);
-      else { setActiveSchemeId(null); setRooms([]); }
+    try {
+      const res = await fetch(`/api/buildings/${buildingId}/schemes`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ name: 'Nowy schemat', rows: 800, cols: 1200, rooms: [], objects: [] }),
+      });
+      const created: SchemeRecord = await res.json();
+      setSchemes(prev => [...prev, created as unknown as SchemeSummary]);
+      loadScheme(created.id);
+    } finally {
+      setCreating(false);
     }
   };
 
+  const handleDelete = async (id: number) => {
+    if (!confirm('Usunąć schemat?')) return;
+    await fetch(`/api/buildings/${buildingId}/schemes/${id}`, { method: 'DELETE', headers });
+    setSchemes(prev => prev.filter(s => s.id !== id));
+    if (activeScheme?.id === id) setActiveScheme(null);
+  };
+
   const handleRename = async (id: number, name: string) => {
-    if (!name.trim()) return;
     await fetch(`/api/buildings/${buildingId}/schemes/${id}`, {
-      method: 'PUT', headers,
-      body: JSON.stringify({ name: name.trim() }),
+      method: 'PUT', headers, body: JSON.stringify({ name }),
     });
-    setSchemes(prev => prev.map(s => s.id === id ? { ...s, name: name.trim() } : s));
-    if (id === activeSchemeId) setSchemeName(name.trim());
+    setSchemes(prev => prev.map(s => s.id === id ? { ...s, name } : s));
+    if (activeScheme?.id === id) setActiveScheme(prev => prev ? { ...prev, name } : prev);
   };
 
-  // ── Grid interaction ──
-  const occupiedSet = new Set(
-    rooms.flatMap(r => {
-      const cells: string[] = [];
-      for (let row = r.rowStart; row <= r.rowEnd; row++)
-        for (let col = r.colStart; col <= r.colEnd; col++)
-          cells.push(`${row},${col}`);
-      return cells;
-    })
-  );
+  // ── PDF upload — fixed 2560×1440 (2K) for crisp zoomed viewing ──────────────
+  const PDF_W = 2560;
+  const PDF_H = 1440;
 
-  const startCell = (row: number, col: number) => {
-    if (occupiedSet.has(`${row},${col}`)) return;
-    setSelectedRoomId(null); setShowCreate(false); setIsSelecting(true);
-    dragStart.current = { row, col };
-    setSelection({ rowStart: row, rowEnd: row, colStart: col, colEnd: col });
+  const handlePdfUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !activeScheme) return;
+    e.target.value = '';
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const updated = { ...activeScheme, pdf_data: dataUrl, cols: PDF_W, rows: PDF_H };
+      setActiveScheme(updated);
+      triggerSave({ pdf_data: dataUrl, cols: PDF_W, rows: PDF_H });
+    };
+    reader.readAsDataURL(file);
   };
 
-  const moveCell = (row: number, col: number) => {
-    if (!isSelecting || !dragStart.current) return;
-    setSelection({ rowStart: dragStart.current.row, rowEnd: row, colStart: dragStart.current.col, colEnd: col });
+  // ── Opacity ────────────────────────────────────────────────────────────────
+
+  const changeOpacity = (v: number) => {
+    setPdfOpacity(v);
+    if (activeScheme) setActiveScheme(prev => prev ? { ...prev, grid_opacity: v } : prev);
+    triggerSave({ grid_opacity: v });
   };
 
-  const endCell = () => {
-    if (!isSelecting) return;
-    setIsSelecting(false);
-    if (selection) setShowCreate(true);
+  // ── Object creation ────────────────────────────────────────────────────────
+
+  const handleRoomCreate = (sel: SelectionRect) => setPendingRoom(sel);
+
+  const confirmRoom = (label: string, colorIdx: number) => {
+    if (!pendingRoom) return;
+    const newObj = {
+      id: uid(), kind: 'room' as const,
+      colStart: pendingRoom.colStart, colEnd: pendingRoom.colEnd,
+      rowStart: pendingRoom.rowStart, rowEnd: pendingRoom.rowEnd,
+      label, colorIdx,
+    };
+    updateObjects(prev => [...prev, newObj as SchemeObject]);
+    setPendingRoom(null);
   };
 
-  const handleConfirm = useCallback((name: string, type: RoomType) => {
-    if (!selection) return;
-    const n = normalize(selection);
-    if (rooms.some(r => overlaps(n, r))) { alert('Wybrany obszar nakłada się na istniejące pomieszczenie.'); return; }
-    const newRoom: Room = { id: uid(), name, type, rowStart: n.rowStart, rowEnd: n.rowEnd, colStart: n.colStart, colEnd: n.colEnd, animState: 'idle' };
-    setRoomsAndSave(prev => [...prev, newRoom]);
-    setSelection(null); setShowCreate(false);
-  }, [selection, rooms]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const cycleState = (id: string) => {
-    const order: RoomAnimState[] = ['idle', 'active', 'warning', 'alarm'];
-    setRoomsAndSave(prev => prev.map(r => r.id !== id ? r : { ...r, animState: order[(order.indexOf(r.animState) + 1) % order.length] }));
+  const handleDevicePlace = (sel: SelectionRect) => {
+    setPendingCell(sel);
+    setShowDeviceDialog(true);
   };
 
-  const handleDeleteRoom = () => {
-    if (!selectedRoomId) return;
-    setRoomsAndSave(prev => prev.filter(r => r.id !== selectedRoomId));
-    setSelectedRoomId(null);
+  const confirmDevice = (iconType: DeviceIconType, label: string) => {
+    if (!pendingCell) return;
+    const newObj: SchemeObject = {
+      id: uid(), kind: 'device',
+      colStart: pendingCell.colStart, colEnd: pendingCell.colEnd,
+      rowStart: pendingCell.rowStart, rowEnd: pendingCell.rowEnd,
+      label, iconType,
+    };
+    updateObjects(prev => [...prev, newObj]);
+    setShowDeviceDialog(false);
+    setPendingCell(null);
   };
 
-  const selectedRoom = rooms.find(r => r.id === selectedRoomId) ?? null;
+  const handleDeleteSelected = () => {
+    if (!selectedId) return;
+    updateObjects(prev => prev.filter(o => o.id !== selectedId));
+    setSelectedId(null);
+  };
 
-  const freeCells: { row: number; col: number }[] = [];
-  for (let row = 0; row < rows; row++)
-    for (let col = 0; col < cols; col++)
-      if (!occupiedSet.has(`${row},${col}`))
-        freeCells.push({ row, col });
+  const handleObjectUpdate = (updated: SchemeObject) => {
+    updateObjects(prev => prev.map(o => o.id === updated.id ? updated : o));
+  };
 
-  // ──────────────────────────────────────────────────────────────────────────
-
-  if (libLoading) return <div className="scheme-page"><div className="scheme-loading"><div className="spinner" /></div></div>;
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <div className="scheme-page">
-      {/* Toolbar */}
-      <div className="scheme-toolbar">
-        <span className="scheme-toolbar-title">{schemeName}</span>
-        {activeSchemeId && (
-          <span className={`save-status save-status-${saveStatus}`}>
-            {saveStatus === 'saved' ? '✓ Zapisano' : saveStatus === 'saving' ? '⟳ Zapisywanie…' : '● Niezapisane'}
-          </span>
-        )}
-        <div className="scheme-size-controls">
-          <label>Wiersze</label>
-          <input type="number" min={2} max={30} value={rows} onChange={e => {
-            const v = Math.max(2, Math.min(30, Number(e.target.value)));
-            setRows(v); const pruned = rooms.filter(r => r.rowEnd < v); setRooms(pruned); triggerSave(pruned, v, cols);
-          }} />
-          <label>Kolumny</label>
-          <input type="number" min={2} max={30} value={cols} onChange={e => {
-            const v = Math.max(2, Math.min(30, Number(e.target.value)));
-            setCols(v); const pruned = rooms.filter(r => r.colEnd < v); setRooms(pruned); triggerSave(pruned, rows, v);
-          }} />
-        </div>
-        <div className="scheme-toolbar-right">
-          {selectedRoom && <>
-            <button className="tb-btn tb-cycle" onClick={() => cycleState(selectedRoom.id)}>Zmień stan</button>
-            <button className="tb-btn tb-delete" onClick={handleDeleteRoom}>Usuń pokój</button>
-          </>}
-          <button className="tb-btn tb-clear" onClick={() => { setRoomsAndSave(() => []); setSelectedRoomId(null); }}>Wyczyść wszystko</button>
-        </div>
-      </div>
+      <SchemeToolbar
+        tool={tool}
+        pdfOpacity={pdfOpacity}
+        canvasZoom={canvasZoom}
+        saveStatus={saveStatus}
+        hasActiveScheme={!!activeScheme}
+        hasSelectedObj={!!selectedObj}
+        pdfW={pdfW}
+        pdfH={pdfH}
+        onToolChange={setTool}
+        onOpacityChange={changeOpacity}
+        onZoomChange={updater => setCanvasZoom(updater)}
+        onZoomReset={() => setCanvasZoom(1)}
+        onPdfUpload={handlePdfUpload}
+        onDeleteSelected={handleDeleteSelected}
+      />
 
-      {/* Info bar for selected room */}
-      {selectedRoom && (
-        <div className="scheme-info-bar">
-          <span className="sib-icon">{getRoomIcon(selectedRoom.type, selectedRoom.animState, 20)}</span>
-          <strong>{selectedRoom.name}</strong>
-          <span className="sib-sep">·</span><span>{ROOM_TYPE_META[selectedRoom.type].label}</span>
-          <span className="sib-sep">·</span><span className={`state-pill-${selectedRoom.animState}`}>{selectedRoom.animState}</span>
-        </div>
-      )}
-
-      {/* Workspace */}
       <div className="scheme-workspace">
-        {/* Library sidebar */}
         <SchemeSidebar
           schemes={schemes}
-          activeId={activeSchemeId}
+          activeId={activeScheme?.id ?? null}
           creating={creating}
-          onSelect={id => {
-            // Fetch full scheme (with rooms) when switching via sidebar
-            fetch(`/api/buildings/${buildingId}/schemes/${id}`, { headers: { Authorization: `Bearer ${token}` } })
-              .then(r => r.json())
-              .then((s: SchemeRecord) => loadScheme(s))
-              .catch(console.error);
-          }}
+          onSelect={id => loadScheme(id)}
           onCreate={() => void handleCreate()}
-          onDelete={id => void handleDeleteScheme(id)}
+          onDelete={id => void handleDelete(id)}
           onRename={(id, name) => void handleRename(id, name)}
         />
 
-        {/* Grid */}
-        {activeSchemeId ? (
-          <div className="scheme-grid"
-            style={{ gridTemplateRows: `repeat(${rows}, 1fr)`, gridTemplateColumns: `repeat(${cols}, 1fr)` }}
-            onMouseLeave={endCell} onMouseUp={endCell} onClick={() => setSelectedRoomId(null)}
-          >
-            {freeCells.map(({ row, col }) => (
-              <div key={`${row}-${col}`}
-                className={`scheme-cell ${inSel(row, col, selection) ? 'scheme-cell-selected' : ''}`}
-                style={{ gridRow: `${row + 1}`, gridColumn: `${col + 1}` }}
-                onMouseDown={e => { e.preventDefault(); startCell(row, col); }}
-                onMouseEnter={() => moveCell(row, col)}
-              />
-            ))}
-            {rooms.map(room => (
-              <RoomCell key={room.id} room={room} selected={room.id === selectedRoomId} onClick={() => setSelectedRoomId(room.id)} />
-            ))}
-          </div>
-        ) : (
-          <div className="scheme-no-active">
-            <p>Wybierz lub utwórz schemat z listy po lewej stronie.</p>
-          </div>
-        )}
-
-        {/* Create panel */}
-        {showCreate && selection && (
-          <div className="scheme-panel-wrap">
-            <CreatePanel selection={selection} onConfirm={handleConfirm} onCancel={() => { setSelection(null); setShowCreate(false); }} />
-          </div>
-        )}
-      </div>
-
-      {/* Legend */}
-      <div className="scheme-legend">
-        {(Object.keys(ROOM_TYPE_META) as RoomType[]).map(t => (
-          <div key={t} className="legend-item">{getRoomIcon(t, 'idle', 18)}<span>{ROOM_TYPE_META[t].label}</span></div>
-        ))}
-        <div className="legend-states">
-          {(['idle','active','warning','alarm'] as RoomAnimState[]).map(s => (
-            <span key={s} className={`legend-state state-pill-${s}`}>{s}</span>
-          ))}
+        {/* Scrollable canvas area */}
+        <div
+          className="scheme-canvas-wrap"
+          style={{ overflow: 'auto', flex: 1 }}
+          onClick={e => {
+            if (e.target === e.currentTarget && tool === 'select') setSelectedId(null);
+          }}
+        >
+          {activeScheme ? (
+            <div style={{
+              width:  pdfW * canvasZoom,
+              height: pdfH * canvasZoom,
+              position: 'relative',
+              flexShrink: 0,
+            }}>
+              <div style={{
+                transform: `scale(${canvasZoom})`,
+                transformOrigin: 'top left',
+                position: 'absolute',
+                top: 0, left: 0,
+              }}>
+                <SchemeCanvas
+                  pdfDataUrl={activeScheme.pdf_data ?? null}
+                  pdfOpacity={pdfOpacity}
+                  canvasZoom={canvasZoom}
+                  pdfW={pdfW}
+                  pdfH={pdfH}
+                  objects={activeScheme.objects ?? []}
+                  selectedId={selectedId}
+                  tool={tool}
+                  deviceItems={deviceItems}
+                  onObjectClick={id => setSelectedId(id)}
+                  onRoomCreate={handleRoomCreate}
+                  onDevicePlace={handleDevicePlace}
+                  onCanvasClick={() => setSelectedId(null)}
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="scheme-no-active">
+              <p>Wybierz lub utwórz schemat z listy po lewej stronie.</p>
+            </div>
+          )}
         </div>
+
+        {selectedObj && (
+          <DetailPanel
+            obj={selectedObj}
+            deviceItems={deviceItems}
+            onUpdate={handleObjectUpdate}
+            onDelete={handleDeleteSelected}
+            onClose={() => setSelectedId(null)}
+            onOpenModal={() => setShowDetailModal(true)}
+          />
+        )}
       </div>
+
+      {/* ── Dialogs ── */}
+      {pendingRoom && (
+        <div className="modal-overlay" onClick={() => setPendingRoom(null)}>
+          <div className="modal-box" onClick={e => e.stopPropagation()}>
+            <RoomDialog
+              rows={pendingRoom.rowEnd - pendingRoom.rowStart + 1}
+              cols={pendingRoom.colEnd - pendingRoom.colStart + 1}
+              onConfirm={confirmRoom}
+              onCancel={() => setPendingRoom(null)}
+            />
+          </div>
+        </div>
+      )}
+
+      {showDeviceDialog && (
+        <div className="modal-overlay" onClick={() => { setShowDeviceDialog(false); setPendingCell(null); }}>
+          <div className="modal-box" onClick={e => e.stopPropagation()}>
+            <DevicePickerDialog
+              onConfirm={confirmDevice}
+              onCancel={() => { setShowDeviceDialog(false); setPendingCell(null); }}
+            />
+          </div>
+        </div>
+      )}
+
+
+      {showDetailModal && selectedObj && (
+        <DetailModal
+          obj={selectedObj}
+          deviceItems={deviceItems}
+          onClose={() => setShowDetailModal(false)}
+        />
+      )}
     </div>
   );
 };

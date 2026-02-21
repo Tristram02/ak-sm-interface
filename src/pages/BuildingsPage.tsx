@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { BuildingModal } from '../components/buildings/BuildingModal';
 
 export interface Building {
   id: number;
@@ -125,61 +126,15 @@ export const BuildingsPage: React.FC<BuildingsPageProps> = ({ onSelect }) => {
         </div>
       )}
 
-      {/* Modal */}
       {showModal && (
-        <div className="modal-overlay" onClick={() => setShowModal(false)}>
-          <div className="modal-box" onClick={e => e.stopPropagation()}>
-            <h2>{editing ? 'Edytuj budynek' : 'Nowy budynek'}</h2>
-
-            {(['name', 'ip_address'] as const).map(field => (
-              <div className="modal-field" key={field}>
-                <label>{field === 'name' ? 'Nazwa' : 'Adres IP'}</label>
-                <input
-                  type="text"
-                  value={form[field]}
-                  onChange={e => setForm(f => ({ ...f, [field]: e.target.value }))}
-                  placeholder={field === 'name' ? 'Magazyn Centralny' : '192.168.1.100'}
-                />
-              </div>
-            ))}
-
-            <div className="modal-field">
-              <label>Port</label>
-              <input
-                type="number"
-                value={form.port}
-                onChange={e => setForm(f => ({ ...f, port: Number(e.target.value) }))}
-              />
-            </div>
-
-            <div className="modal-field">
-              <label>Login urządzenia</label>
-              <input
-                type="text"
-                value={form.device_user}
-                onChange={e => setForm(f => ({ ...f, device_user: e.target.value }))}
-                placeholder="admin"
-              />
-            </div>
-
-            <div className="modal-field">
-              <label>Hasło urządzenia</label>
-              <input
-                type="password"
-                value={form.device_password}
-                onChange={e => setForm(f => ({ ...f, device_password: e.target.value }))}
-                placeholder="••••••••"
-              />
-            </div>
-
-            <div className="modal-actions">
-              <button className="modal-save" onClick={() => void handleSave()} disabled={saving}>
-                {saving ? 'Zapisywanie…' : 'Zapisz'}
-              </button>
-              <button className="modal-cancel" onClick={() => setShowModal(false)}>Anuluj</button>
-            </div>
-          </div>
-        </div>
+        <BuildingModal
+          editing={editing}
+          form={form}
+          saving={saving}
+          onFormChange={setForm}
+          onSave={() => void handleSave()}
+          onClose={() => setShowModal(false)}
+        />
       )}
     </div>
   );
